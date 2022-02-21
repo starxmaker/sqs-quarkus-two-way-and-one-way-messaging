@@ -27,26 +27,26 @@ public class CoordinatesResourceIT {
     }
 
     @Test
-    public void testQueryEndpointDelays() {
-        Long startTime = System.currentTimeMillis();
-        for (int i = 0; i < 3 ; i++) {
-            given()
-                .when().get("/coordinates/search/{query}", "Santiago")
+    public void testQueryEndpointNotFound() {
+        String rawMessage = given()
+                .when().get("/coordinates/search/{query}", "Chuchuncocity")
                 .then()
-                .statusCode(200);
-        }
-        Long endTime = System.currentTimeMillis();
-        // time between these 3 calls should be at least 10 seconds
-        Assertions.assertTrue(endTime - startTime > 10000);
+                .statusCode(200)
+                .extract()
+                .asString();
+        JsonObject messageReceived = new JsonObject(rawMessage);
+        Assertions.assertNull(messageReceived.getDouble("lat"));
+        Assertions.assertNull(messageReceived.getDouble("lon"));
         
     }
 
     @Test
-    public void testSubmitEndpoint() {
+    public void testSubmitEndpoint() throws InterruptedException{
+        // we send a request to submit coordinates of a new city
         JsonObject body = new JsonObject();
-        body.put("name", "Coquimbo");
-        body.put("lat", -30.4);
-        body.put("lon", -71.5);
+        body.put("name", "Puerto Natales");
+        body.put("lat", -51.7293526);
+        body.put("lon", -72.5283157);
 
         given()
           .when()
@@ -55,5 +55,20 @@ public class CoordinatesResourceIT {
           .post("/coordinates/submit")
           .then()
              .statusCode(200);
+
+        // we wait for a reasonable time
+        Thread.sleep(5000);
+
+        // we check if the city was inserted
+        String rawMessage = given()
+                .when().get("/coordinates/search/{query}", "Puerto Natales")
+                .then()
+                .statusCode(200)
+                .extract()
+                .asString();
+        JsonObject messageReceived = new JsonObject(rawMessage);
+        Assertions.assertNotNull(messageReceived.getDouble("lat"));
+        Assertions.assertNotNull(messageReceived.getDouble("lon"));
+
     }
 }

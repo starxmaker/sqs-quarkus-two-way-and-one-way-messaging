@@ -10,6 +10,7 @@ import org.mockito.ArgumentMatcher;
 import org.mockito.Mockito;
 
 import dev.leosanchez.DTO.QueueMessage;
+import dev.leosanchez.DTO.PollingRequest.PollingRequestBuilder;
 import dev.leosanchez.providers.QueueConsumerProvider.SQSConsumerProvider;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.mockito.InjectMock;
@@ -19,8 +20,10 @@ import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
+import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.atLeast;
 
 import java.util.HashMap;
 import java.util.List;
@@ -43,12 +46,12 @@ public class SQSConsumerProviderTest {
             // we verify that the request has been made with the right parameters
             return matcher.queueUrl().equals(queueUrl) &&
                     matcher.messageAttributeNames().contains("All") &&
-                    matcher.waitTimeSeconds().equals(20) && // we verify that long polling is enabled
-                    matcher.maxNumberOfMessages().equals(10);
+                    matcher.waitTimeSeconds().equals(20);
         })))
-            .thenReturn(
+            .then( invocations -> {
+                Thread.sleep(1000);
                 // we return a mocked response
-                ReceiveMessageResponse.builder().messages(
+                return ReceiveMessageResponse.builder().messages(
                     List.of(
                         Message.builder()
                             .body("Au revoir")
@@ -72,13 +75,13 @@ public class SQSConsumerProviderTest {
                     .build()
                     )
                 )
-                .build()
+                .build(); }
         );
     }
 
     @Test
     public void pollMessages() {
-        List<QueueMessage> messages = sqsProvider.pollMessages(queueUrl);
+        List<QueueMessage> messages = sqsProvider.pollMessages(queueUrl, 10);
         Assertions.assertEquals(2, messages.size());
         Assertions.assertEquals("Au revoir", messages.get(0).getMessage());
         Assertions.assertEquals("https://targetqueue.com/testQueue", messages.get(0).getSourceQueueUrl());
@@ -90,10 +93,13 @@ public class SQSConsumerProviderTest {
 
     @Test
     public void deleteMessages() {
-        sqsProvider.pollMessages(queueUrl);
-        Mockito.verify(sqs, Mockito.times(2)).deleteMessage(argThat((ArgumentMatcher<DeleteMessageRequest>) matcher -> {
-            return (matcher.queueUrl().equals(queueUrl) &&
-                    matcher.receiptHandle().equals("FR_00000001") || (matcher.receiptHandle().equals("EN_00000001") && matcher.queueUrl().equals(queueUrl)));
+        sqsProvider.pollMessages(queueUrl, 10);
+        Mockito.verify(sqs, Mockito.atLeastOnce()).deleteMessage(argThat((ArgumentMatcher<DeleteMessageRequest>) matcher -> {
+            return matcher.receiptHandle().equals("FR_00000001");
+        }));
+
+        Mockito.verify(sqs, Mockito.atLeastOnce()).deleteMessage(argThat((ArgumentMatcher<DeleteMessageRequest>) matcher -> {
+            return matcher.receiptHandle().equals("EN_00000001");
         }));
     }
 
@@ -108,4 +114,76 @@ public class SQSConsumerProviderTest {
         }));
     }
 
+    @Test
+    public void testTwoWaysListening() {
+        // we call the listener
+        sqsProvider.listen(PollingRequestBuilder.builder()
+            .queueUrl(queueUrl)
+            .processer((message) -> "Hola")
+            .maxNumberOfMessagesPerPolling(5)
+        .build());
+        
+        // we wait 3 seconds and we expect at least three calls (assuming that each call took 1 second)
+        Mockito.verify(sqs, Mockito.timeout(3000).atLeast(3)).receiveMessage(argThat((ArgumentMatcher<ReceiveMessageRequest>) matcher -> {
+            return (matcher.queueUrl().equals(queueUrl) &&
+                    matcher.maxNumberOfMessages().equals(5));
+        }));
+        // we verify that the processer and sender has been called
+        Mockito.verify(sqs, atLeast(1)).sendMessage(argThat((ArgumentMatcher<SendMessageRequest>) matcher -> {
+            return (matcher.messageBody().equals("Hola"));
+        }));
+    }
+
+    @Test
+    public void testOneWayListening() throws InterruptedException{
+        // we call the listener with a processer that returns null
+        sqsProvider.listen(PollingRequestBuilder.builder()
+            .queueUrl(queueUrl)
+            .processer((message) -> null)
+            .maxNumberOfMessagesPerPolling(5)
+        .build());
+
+        // we wait 3 seconds and we expect that the message sender is never called with a null message
+        Thread.sleep(3000);
+        Mockito.verify(sqs, Mockito.never()).sendMessage(argThat((ArgumentMatcher<SendMessageRequest>) matcher -> {
+            return (matcher.messageBody().equals(null));
+        }));
+    }
+
+    @Test
+    public void testNoParallelProcessing() throws InterruptedException {
+        // we call the listener with no parallel processing and a min execution time of 500ms
+        sqsProvider.listen(PollingRequestBuilder.builder()
+            .queueUrl(queueUrl)
+            .processer((message) -> "Bonjour")
+            .maxNumberOfMessagesPerPolling(2)
+            .noParallelProcessing()
+            .minExecutionTime(500)
+        .build());
+
+        Thread.sleep(1000); // polling delay;
+        Thread.sleep(500); // min execution time;
+        // there should be just one message processed
+        Mockito.verify(sqs, Mockito.times(1)).sendMessage(argThat((ArgumentMatcher<SendMessageRequest>) matcher -> {
+            return (matcher.messageBody().equals("Bonjour"));
+        }));
+    }
+
+    @Test
+    public void testParallelProcessing() throws InterruptedException {
+        // we call the listener with parallel processing
+        sqsProvider.listen(PollingRequestBuilder.builder()
+            .queueUrl(queueUrl)
+            .processer((message) -> "Hi")
+            .maxNumberOfMessagesPerPolling(2)
+            .minExecutionTime(500)
+        .build());
+
+        Thread.sleep(1000); // polling delay;
+        Thread.sleep(500); // min execution time;
+        // there should be two messages processed
+        Mockito.verify(sqs, Mockito.times(2)).sendMessage(argThat((ArgumentMatcher<SendMessageRequest>) matcher -> {
+            return (matcher.messageBody().equals("Hi"));
+        }));
+    }
 }

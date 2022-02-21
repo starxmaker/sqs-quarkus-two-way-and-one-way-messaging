@@ -10,6 +10,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import javax.annotation.PostConstruct;
@@ -45,20 +46,22 @@ public class SQSClientProvider implements IQueueClientProvider {
     SqsClient sqs;
 
     // the name of the application to make queues with the same name as prefix
-    // NOTE: the property is received as optional because it is not inserted in the test profile and we want to test this class.
-    @ConfigProperty(name="quarkus.application.name")
+    // NOTE: the property is received as optional because it is not inserted in the
+    // test profile and we want to test this class.
+    @ConfigProperty(name = "quarkus.application.name")
     Optional<String> applicationName;
 
     // the response queue that will be created after the initialization of the class
     private String responseQueueUrl;
 
-    // a stack that will receive messages for all the service, no matter the request made
+    // a stack that will receive messages for all the service, no matter the request
+    // made
     private List<Message> messageStack = new ArrayList<>();
 
-    // a flag that will be used to know if the service is currently polling messages
-    private boolean isPolling = false;
+    // a variable that will be used to store the polling task in order to check if
+    // it was done
+    private Future<Void> pollingFuture;
 
-    
     @Override
     public String sendMessage(String targetQueueUrl, String message) {
         String currentResponseQueueUrl = retrieveResponseQueue(); // we make sure that it is initialized
@@ -69,7 +72,8 @@ public class SQSClientProvider implements IQueueClientProvider {
         Map<String, MessageAttributeValue> messageAttributes = new HashMap<>() {
             {
                 put("ResponseQueueUrl",
-                            MessageAttributeValue.builder().dataType("String").stringValue(currentResponseQueueUrl).build());
+                        MessageAttributeValue.builder().dataType("String").stringValue(currentResponseQueueUrl)
+                                .build());
                 // we attach the generated signature to the message
                 put("Signature", MessageAttributeValue.builder().dataType("String").stringValue(signature).build());
             }
@@ -98,17 +102,23 @@ public class SQSClientProvider implements IQueueClientProvider {
                 Message response = findMessage(signature);
                 while (Objects.isNull(response)) {
                     LOG.info("Message not found, polling");
-                    if(isPolling) {
+                    // if the variable that contains the polling task is not null and it is not done, then wait
+                    if (Objects.nonNull(pollingFuture) && !pollingFuture.isDone()) {
+                        LOG.info("There is already a polling in progress, so waiting");
                         try {
                             Thread.sleep(1000);
                         } catch (InterruptedException e) {
-                            LOG.error("Error while polling", e);
+                            e.printStackTrace();
+                            return null;
                         }
                     } else {
-                        pollMessages();
+                        // if the variable is null or it is done, then we start a new polling task
+                        LOG.info("A new polling will be executed");
+                        pollingFuture = CompletableFuture.runAsync(() -> {
+                            pollMessages();
+                        });
                     }
                     response = findMessage(signature);
-                   
                 }
                 return response;
             }, waiterExecutor);
@@ -146,28 +156,26 @@ public class SQSClientProvider implements IQueueClientProvider {
 
     private void pollMessages() {
         LOG.info("Polling messages");
-        // we set the flag to show others that we are polling
-        isPolling = true;
+        // we prepare the request
         List<Message> messages = sqs.receiveMessage(ReceiveMessageRequest.builder()
                 .queueUrl(responseQueueUrl)
                 .maxNumberOfMessages(10)
                 .waitTimeSeconds(20) // long polling
                 .messageAttributeNames("All")
                 .attributeNames(List.of(QueueAttributeName.ALL))
-            .build()).messages();
+                .build()).messages();
         if (messages.size() > 0) {
-           LOG.info("Messages received");
-           for( Message message : messages) {
-               // we stack de message
-               stackMessage(message);
-               // we remove it from the queue
-               deleteMessage(responseQueueUrl, message.receiptHandle());
-           }
+            LOG.info("Messages received");
+            for (Message message : messages) {
+                // we stack the message
+                stackMessage(message);
+                // we remove it from the queue
+                deleteMessage(responseQueueUrl, message.receiptHandle());
+            }
         } else {
             LOG.info("No messages");
         }
-        // we are not polling anymore
-        isPolling = false;
+
     }
 
     @PreDestroy
@@ -188,17 +196,21 @@ public class SQSClientProvider implements IQueueClientProvider {
 
     private Message findMessage(String signature) {
         LOG.info("Finding message");
-        Message response =  messageStack.stream().filter(m -> m.messageAttributes().get("Signature").stringValue().equals(signature))
+        Message response = messageStack.stream()
+                .filter(m -> m.messageAttributes().get("Signature").stringValue().equals(signature))
                 .findFirst().orElse(null);
-        if(Objects.nonNull(response)) {
-            // if there is a message with the signature, we remove it from the list and we return it
+        if (Objects.nonNull(response)) {
+            // if there is a message with the signature, we remove it from the list and we
+            // return it
             messageStack.remove(response);
         }
         return response;
     }
+
     private void stackMessage(Message message) {
         LOG.info("Stacking message");
-        if(messageStack.stream().anyMatch(m -> m.messageAttributes().get("Signature").stringValue().equals(message.messageAttributes().get("Signature").stringValue()))) {
+        if (messageStack.stream().anyMatch(m -> m.messageAttributes().get("Signature").stringValue()
+                .equals(message.messageAttributes().get("Signature").stringValue()))) {
             LOG.info("Message already stacked");
         } else {
             messageStack.add(message);
@@ -208,7 +220,7 @@ public class SQSClientProvider implements IQueueClientProvider {
     private String retrieveResponseQueue() {
         LOG.info("Retrieving current response queue");
         // if the value is null, lets wait until it is initialized
-        while(Objects.isNull(responseQueueUrl)){
+        while (Objects.isNull(responseQueueUrl)) {
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
