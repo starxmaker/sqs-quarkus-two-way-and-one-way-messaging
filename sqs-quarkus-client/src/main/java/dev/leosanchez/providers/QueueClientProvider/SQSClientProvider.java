@@ -1,6 +1,5 @@
 package dev.leosanchez.providers.QueueClientProvider;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,7 +55,7 @@ public class SQSClientProvider implements IQueueClientProvider {
 
     // a stack that will receive messages for all the service, no matter the request
     // made
-    private List<Message> messageStack = new ArrayList<>();
+    private Map<String, Message> messageStack = new HashMap<>();
 
     // a variable that will be used to store the polling task in order to check if
     // it was done
@@ -196,25 +195,18 @@ public class SQSClientProvider implements IQueueClientProvider {
 
     private Message findMessage(String signature) {
         LOG.info("Finding message");
-        Message response = messageStack.stream()
-                .filter(m -> m.messageAttributes().get("Signature").stringValue().equals(signature))
-                .findFirst().orElse(null);
+        Message response = messageStack.get(signature);
         if (Objects.nonNull(response)) {
             // if there is a message with the signature, we remove it from the list and we
             // return it
-            messageStack.remove(response);
+            messageStack.remove(signature);
         }
         return response;
     }
 
     private void stackMessage(Message message) {
         LOG.info("Stacking message");
-        if (messageStack.stream().anyMatch(m -> m.messageAttributes().get("Signature").stringValue()
-                .equals(message.messageAttributes().get("Signature").stringValue()))) {
-            LOG.info("Message already stacked");
-        } else {
-            messageStack.add(message);
-        }
+        messageStack.put(message.messageAttributes().get("Signature").stringValue(), message);
     }
 
     private String retrieveResponseQueue() {

@@ -37,6 +37,7 @@ public class CoordinatesResourceIT {
         JsonObject messageReceived = new JsonObject(rawMessage);
         Assertions.assertNull(messageReceived.getDouble("lat"));
         Assertions.assertNull(messageReceived.getDouble("lon"));
+        Assertions.assertEquals("NO_RESULTS", messageReceived.getString("status"));
         
     }
 
