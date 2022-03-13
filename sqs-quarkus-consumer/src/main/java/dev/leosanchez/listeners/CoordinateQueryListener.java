@@ -22,9 +22,13 @@ public class CoordinateQueryListener  implements IListener {
     // listener for two ways comunication
     public Optional<String> process(String message){
         try {
+            // convert the original message to json
             JsonObject requestBody = new JsonObject(message);
+            // extract the city name to be searched
             String city = requestBody.getString("city");
+            // we make the query
             List<Double> coordinates = repository.getCoordinates(city);
+            // we start building the response
             JsonObject json = new JsonObject();
             if(Objects.nonNull(coordinates)) {
                 // coordinates found

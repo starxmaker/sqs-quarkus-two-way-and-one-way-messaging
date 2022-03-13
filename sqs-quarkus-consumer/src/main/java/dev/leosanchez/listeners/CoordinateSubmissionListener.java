@@ -15,7 +15,6 @@ import io.vertx.core.json.JsonObject;
 @ListenerQualifier(urlProperty = "oneway.queue.url")
 public class CoordinateSubmissionListener implements IListener {
 
-
     @Inject
     CoordinatesRepository repository;
 

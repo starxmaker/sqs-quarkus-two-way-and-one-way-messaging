@@ -1,10 +1,16 @@
 package dev.leosanchez.listeners;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import javax.annotation.PostConstruct;
 import javax.enterprise.context.ApplicationScoped;
@@ -14,6 +20,7 @@ import javax.inject.Inject;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
+import dev.leosanchez.DTO.ListenRequest;
 import dev.leosanchez.DTO.QueueMessage;
 import dev.leosanchez.providers.QueueConsumerProvider.IQueueConsumerProvider;
 import io.quarkus.runtime.Startup;
@@ -26,31 +33,32 @@ public class ListenerLauncher {
     // a simple logger
     private static Logger LOG = Logger.getLogger(ListenerLauncher.class);
 
-    // our listeners filtered by the qualifier
+    // our listeners injected and filtered by the qualifier
     @ListenerQualifier
-    Instance<IListener> listeners;
+    Instance<IListener> partialListeners;
 
     // the provider we implemented
     @Inject
     IQueueConsumerProvider queueConsumerProvider;
-
-    ExecutorService executorService;
 
     @PostConstruct
     public void init() {
         // we just want to launch the listeners if the profile is not test
         if (!ProfileManager.getActiveProfile().equals("test")) {
             LOG.info("Launching listeners");
-            List<IListener> listenerList = listeners.stream().collect(java.util.stream.Collectors.toList());
-            startListeners(listenerList);
+            // we transform the data so we can handle it in a more readable way
+            List<ListenRequest> requests = extractListenRequests();
+            // we launch the listening orchestation in a different thread to avoid blocking the main thread
+            Executors.newSingleThreadExecutor().submit(() -> orchestrateListeners(requests, null));
         }
     }
 
-    public void startListeners(List<IListener> listenersList) {
-        // we create a thread pool with the number of listeners
-        executorService = Executors.newFixedThreadPool(listenersList.size());
-        for (IListener listener : listenersList) {
-            // we extract the Original Class name from the proxy
+    private List<ListenRequest> extractListenRequests() {
+        // our initial response
+        List<ListenRequest> requests = new ArrayList<>();
+        // we iterate the injected listeners
+        for (IListener listener : partialListeners) {
+            // we extract the original class name from the proxy (Quarkus does not inject the bean directly)
             String listenerProxyClassName = listener.getClass().getName();
             String listenerClassName = cleanClassName(listenerProxyClassName);
             // we load the original class
@@ -62,61 +70,91 @@ public class ListenerLauncher {
                 LOG.error("Metadata for listener " + listenerClassName + " not found. Skipping...");
                 continue;
             }
-            // We get our annotation
+            // We get the annotation from the original class
             ListenerQualifier annotation = listenerClass.getAnnotation(ListenerQualifier.class);
-
-            // We extract the metadata
-            String urlProperty = annotation.urlProperty();
-            if (urlProperty.equals("")) {
-                // if no url property, skip
-                LOG.error("No queue url property for listener " + listenerClassName + " was provided. Skipping...");
-                continue;
+            // if the annotation has an valid url property we continue
+            if (Objects.nonNull(annotation.urlProperty()) && !annotation.urlProperty().equals("")) {
+                // we get the url from properties
+                String url = ConfigProvider.getConfig().getValue(annotation.urlProperty(), String.class);
+                // we build an object containing all the information
+                ListenRequest lr = new ListenRequest(listener, url, annotation.parallelProcessing(),
+                        annotation.maxNumberOfMessagesPerProcessing(), annotation.minProcessingMilliseconds());
+                // we append it to our response
+                requests.add(lr);
             }
-            boolean parallelProcessing = annotation.parallelProcessing();
-            int minProcessingMilliseconds = annotation.minProcessingMilliseconds();
-            int maxNumberOfMessagesPerProcessing = annotation.maxNumberOfMessagesPerProcessing();
+        }
+        return requests;
+    }
 
-            // obtaining url from properties
-            String queryUrl = ConfigProvider.getConfig().getValue(urlProperty, String.class);
-            // we launch the specific listener as a task to submit on our thread pool
-            executorService.submit(() -> {
-                startListener(listener, queryUrl, parallelProcessing, maxNumberOfMessagesPerProcessing,
-                        minProcessingMilliseconds);
-            });
+    public void orchestrateListeners(List<ListenRequest> requests, Integer pollingQuantity) {
+        // here we will store the current executions
+        Map<String, Future<?>> currentExecutions = new HashMap<>();
+        // we will also keep a record of the quantity of the pollings performed per listener
+        Map<String, Integer> pollingRecord = requests.stream().collect(Collectors.toMap(ListenRequest::getQueueUrl, e -> 0));
+        // iterate continuosly  or until iterations are done
+        while (Objects.isNull(pollingQuantity) || !pollingRecord.values().stream().allMatch(p -> p >= pollingQuantity)) {
+            // we iterate each request extracted
+            for (ListenRequest request : requests) {
+                // we check how much pollings have been done for this request
+                Integer currentIterations = pollingRecord.get(request.getQueueUrl());
+                // if we dont limit the number of pollings or  if the current number of pollings is less than the one desired, continue
+                if (Objects.isNull(pollingQuantity) || currentIterations <  pollingQuantity){
+                    // we verify if there is a current execution for this request
+                    Future<?> currentTask = currentExecutions.get(request.getQueueUrl());
+                    // if there is no execution or if the current execution is done, run a new one for the request
+                    // if there is an execution not done, we skip this request and in a new execution we will check if it is finished
+                    if (Objects.isNull(currentTask) || currentTask.isDone()) {
+                        // we define and run the new task
+                        Future<?> currentExecution = CompletableFuture.runAsync(() -> {
+                                performPolling(request);
+                            });
+                        // we save it on our records
+                        currentExecutions.put(request.getQueueUrl(), currentExecution);
+                        // if the polling quantity param was specified, then update the polling records
+                        if(Objects.nonNull(pollingQuantity)) {
+                            pollingRecord.put(request.getQueueUrl(), currentIterations + 1);
+                        }
+                    }
+                }
+            }
+        }
+        // once the polling limit is reached, we wait for the current executions to finish
+        for (Future<?> future : currentExecutions.values()) {
+            try {
+                future.get();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
     }
 
-    public void startListener(IListener listener, String url, boolean parallelProcessing,
-            int maxNumberOfMessagesPerProcessing, int minProcessingMilliseconds) {
-        try {
-            // we start listening
-            while (!Thread.interrupted()) {
-                LOG.info("polling messages for queue " + url);
-                // we poll messages from the queue
-                List<QueueMessage> messages = queueConsumerProvider.pollMessages(url, maxNumberOfMessagesPerProcessing);
-                if (messages.isEmpty()) {
-                    LOG.info("No messages received for queue" + url);
-                    continue;
-                } else {
-                    // if we receive a message, we start processing
-                    LOG.info("Received " + messages.size() + " messages");
-                    // we configure a consumer for the messages we receive
-                    Consumer<QueueMessage> consumer = message -> {
-                        onMessage(message, listener, minProcessingMilliseconds);
-                    };
-                    // if we configured parallelism, we use it
-                    if (parallelProcessing) {
-                        messages.parallelStream().forEach(consumer);
-                    } else {
-                        // if not, the messages will be processed sequentially
-                        messages.stream().forEach(consumer);
-                    }
-                }
 
+    private void performPolling(ListenRequest request) {
+        try {
+            LOG.info("polling messages for queue " + request.getQueueUrl());
+            // we poll messages from the queue
+            List<QueueMessage> messages = queueConsumerProvider.pollMessages(request.getQueueUrl(),
+                    request.getMaxMessagesPerPolling());
+            if (messages.isEmpty()) {
+                LOG.info("No messages received for queue" + request.getQueueUrl());
+            } else {
+                // if we receive a message, we start processing
+                LOG.info("Received " + messages.size() + " messages");
+                // we configure a consumer for the messages we receive
+                Consumer<QueueMessage> consumer = message -> {
+                    onMessage(message, request.getListener(), request.getMinExecutionMilliseconds());
+                };
+                // if we configured parallel processing, we use it
+                if (request.isParallelProcessing()) {
+                    messages.parallelStream().forEach(consumer);
+                } else {
+                    // if not, the messages will be processed sequentially
+                    messages.stream().forEach(consumer);
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
-            LOG.error("Queue " + url + " was stopped due to an error", e);
+            LOG.error("Queue " + request.getQueueUrl() + " was stopped due to an error", e);
         }
     }
 
@@ -124,8 +162,7 @@ public class ListenerLauncher {
         Long startExecution = System.currentTimeMillis();
         // we invoke the method
         Optional<String> response = listener.process(message.getMessage());
-        // if the response was not null we send it to the source queue according to its
-        // signature
+        // if the response was not null we send it to the source queue according to its signature
         if (response.isPresent()) {
             LOG.infov("Sending response: {0} {1} {2}", response, message.getSourceQueueUrl(),
                     message.getSignature());
@@ -143,7 +180,6 @@ public class ListenerLauncher {
                 e.printStackTrace();
             }
         }
-
     }
 
     private String cleanClassName(String proxyClassName) {
