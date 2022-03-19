@@ -1,4 +1,4 @@
-package dev.leosanchez.providers.QueueClientProvider;
+package dev.leosanchez.services;
 
 import java.util.HashMap;
 import java.util.List;
@@ -20,29 +20,18 @@ import javax.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
-import io.quarkus.arc.lookup.LookupIfProperty;
-import io.quarkus.runtime.annotations.RegisterForReflection;
-import software.amazon.awssdk.services.sqs.SqsClient;
-import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
-import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
-import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
-import software.amazon.awssdk.services.sqs.model.Message;
-import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
-import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
-import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
-import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
+import dev.leosanchez.DTO.QueueMessage;
+import dev.leosanchez.adapters.QueueClientAdapter.IQueueClientAdapter;
 
 @ApplicationScoped
-@LookupIfProperty(name = "queueclient.provider", stringValue = "sqs")
-@RegisterForReflection
-public class SQSClientProvider implements IQueueClientProvider {
-
+public class QueueService {
+    
     // just a logger
-    private static final Logger LOG = Logger.getLogger(SQSClientProvider.class);
+    private static final Logger LOG = Logger.getLogger(QueueService.class);
 
     // the sdk client
     @Inject
-    SqsClient sqs;
+    IQueueClientAdapter queueAdapter;
 
     // the name of the application to make queues with the same name as prefix
     // NOTE: the property is received as optional because it is not inserted in the
@@ -53,43 +42,31 @@ public class SQSClientProvider implements IQueueClientProvider {
     // the response queue that will be created after the initialization of the class
     private String responseQueueUrl;
 
-    // a stack that will receive messages for all the service, no matter the request
-    // made
-    private Map<String, Message> messageStack = new HashMap<>();
+    // a stack that will receive messages for all the service, no matter the request made
+    private Map<String, String> messageStack = new HashMap<>();
 
     // a variable that will be used to store the polling task in order to check if
     // it was done
     private Future<Void> pollingFuture;
 
-    @Override
     public String sendMessage(String targetQueueUrl, String message) {
-        String currentResponseQueueUrl = retrieveResponseQueue(); // we make sure that it is initialized
         // we generate a signature
         String signature = UUID.randomUUID().toString();
         LOG.info("Sending message " + message);
         // we assign the attributes to the message
-        Map<String, MessageAttributeValue> messageAttributes = new HashMap<>() {
+        Map<String, String> messageAttributes = new HashMap<>() {
             {
-                put("ResponseQueueUrl",
-                        MessageAttributeValue.builder().dataType("String").stringValue(currentResponseQueueUrl)
-                                .build());
+                put("ResponseQueueUrl", retrieveResponseQueue()); // we make sure that it is initialized
                 // we attach the generated signature to the message
-                put("Signature", MessageAttributeValue.builder().dataType("String").stringValue(signature).build());
+                put("Signature", signature);
             }
         };
-        // we build thSe request
-        SendMessageRequest requestWithResponseUrl = SendMessageRequest.builder()
-                .queueUrl(targetQueueUrl)
-                .messageBody(message)
-                .messageAttributes(messageAttributes)
-                .build();
-        // we send the request
-        sqs.sendMessage(requestWithResponseUrl);
+        // we send the message through our adapter
+        queueAdapter.sendMessage(targetQueueUrl, message, messageAttributes);
         // we return the generated signature
         return signature;
     }
 
-    @Override
     public String receiveResponse(String signature, Integer secondsToTimeout) {
         LOG.info("Awaiting response");
         // we poll for the messages in another thread
@@ -97,8 +74,8 @@ public class SQSClientProvider implements IQueueClientProvider {
         String receivedMessage = null; // if timeout, it will return null
         try {
             // we create a future that will wait for the response
-            CompletableFuture<Message> future = CompletableFuture.supplyAsync(() -> {
-                Message response = findMessage(signature);
+            CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+                String response = findMessage(signature);
                 while (Objects.isNull(response)) {
                     LOG.info("Message not found, polling");
                     // if the variable that contains the polling task is not null and it is not done, then wait
@@ -121,8 +98,7 @@ public class SQSClientProvider implements IQueueClientProvider {
                 }
                 return response;
             }, waiterExecutor);
-            Message message = future.get(secondsToTimeout, TimeUnit.SECONDS); // here we wait for the response
-            receivedMessage = message.body(); // we extract the message
+            receivedMessage = future.get(secondsToTimeout, TimeUnit.SECONDS); // here we wait for the response
         } catch (Exception e) {
             // if there is an error, we print the stacktrace
             LOG.error("Timeout");
@@ -144,32 +120,24 @@ public class SQSClientProvider implements IQueueClientProvider {
         String prefix = projectName + "_RQ_TEMP_";
         // we create a unique name for the response queue
         String responseQueueName = prefix + UUID.randomUUID().toString();
-        // we send to amazon the request to create the queue
-        LOG.info("Creating queue: " + responseQueueName);
-        CreateQueueRequest createQueueRequest = CreateQueueRequest.builder()
-                .queueName(responseQueueName)
-                .build();
-        // we return the created queue url
-        responseQueueUrl = sqs.createQueue(createQueueRequest).queueUrl();
+        // we receive the queue url
+        responseQueueUrl = queueAdapter.createQueue(responseQueueName);
     }
 
     private void pollMessages() {
         LOG.info("Polling messages");
         // we prepare the request
-        List<Message> messages = sqs.receiveMessage(ReceiveMessageRequest.builder()
-                .queueUrl(responseQueueUrl)
-                .maxNumberOfMessages(10)
-                .waitTimeSeconds(20) // long polling
-                .messageAttributeNames("All")
-                .attributeNames(List.of(QueueAttributeName.ALL))
-                .build()).messages();
+        List<QueueMessage> messages = queueAdapter.receiveMessages(responseQueueUrl, 10);
         if (messages.size() > 0) {
             LOG.info("Messages received");
-            for (Message message : messages) {
-                // we stack the message
-                stackMessage(message);
+            for (QueueMessage message : messages) {
+                Map<String, String> attributes = message.getAttributes();
+                String signature = attributes.get("Signature");
+                if (Objects.nonNull(signature)) {
+                    messageStack.put(signature, message.getMessage());
+                }
                 // we remove it from the queue
-                deleteMessage(responseQueueUrl, message.receiptHandle());
+                queueAdapter.deleteMessage(responseQueueUrl, message.getReceiptHandle());
             }
         } else {
             LOG.info("No messages");
@@ -181,21 +149,16 @@ public class SQSClientProvider implements IQueueClientProvider {
     public void deleteResponseQueue() {
         try {
             LOG.info("Deleting queue: " + responseQueueUrl);
-            DeleteQueueRequest request = DeleteQueueRequest.builder().queueUrl(responseQueueUrl).build();
-            sqs.deleteQueue(request);
+            queueAdapter.deleteQueue(responseQueueUrl);
         } catch (Exception e) {
             LOG.error("Error while deleting queue", e);
         }
     }
 
-    private void deleteMessage(String queueUrl, String receiptHandle) {
-        LOG.info("Deleting message");
-        sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(queueUrl).receiptHandle(receiptHandle).build());
-    }
 
-    private Message findMessage(String signature) {
+    private String findMessage(String signature) {
         LOG.info("Finding message");
-        Message response = messageStack.get(signature);
+        String response = messageStack.get(signature);
         if (Objects.nonNull(response)) {
             // if there is a message with the signature, we remove it from the list and we
             // return it
@@ -204,10 +167,6 @@ public class SQSClientProvider implements IQueueClientProvider {
         return response;
     }
 
-    private void stackMessage(Message message) {
-        LOG.info("Stacking message");
-        messageStack.put(message.messageAttributes().get("Signature").stringValue(), message);
-    }
 
     private String retrieveResponseQueue() {
         LOG.info("Retrieving current response queue");
@@ -219,8 +178,10 @@ public class SQSClientProvider implements IQueueClientProvider {
                 e.printStackTrace();
             }
         }
+        if (responseQueueUrl.equals("NO_QUEUE_CREATED")) {
+            throw new Error("No response queue created");
+        }
         // so here we return the value only when we know it is initialized
         return responseQueueUrl;
     }
-
 }

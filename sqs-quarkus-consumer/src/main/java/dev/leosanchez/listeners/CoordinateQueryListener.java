@@ -6,7 +6,8 @@ import java.util.Optional;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 
-import dev.leosanchez.repositories.CoordinatesRepository;
+import dev.leosanchez.qualifiers.ListenerQualifier;
+import dev.leosanchez.services.CoordinatesService;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import io.vertx.core.json.JsonObject;
 
@@ -17,7 +18,7 @@ import io.vertx.core.json.JsonObject;
 public class CoordinateQueryListener  implements IListener {
 
     @Inject
-    CoordinatesRepository repository;
+    CoordinatesService service;
     
     // listener for two ways comunication
     public Optional<String> process(String message){
@@ -27,7 +28,7 @@ public class CoordinateQueryListener  implements IListener {
             // extract the city name to be searched
             String city = requestBody.getString("city");
             // we make the query
-            List<Double> coordinates = repository.getCoordinates(city);
+            List<Double> coordinates = service.getCoordinates(city);
             // we start building the response
             JsonObject json = new JsonObject();
             if(Objects.nonNull(coordinates)) {

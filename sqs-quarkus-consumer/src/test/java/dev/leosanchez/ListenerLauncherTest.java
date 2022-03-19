@@ -2,6 +2,7 @@ package dev.leosanchez;
 
 import static org.mockito.ArgumentMatchers.argThat;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -17,8 +18,8 @@ import org.mockito.Mockito;
 import dev.leosanchez.DTO.ListenRequest;
 import dev.leosanchez.DTO.QueueMessage;
 import dev.leosanchez.listeners.IListener;
-import dev.leosanchez.listeners.ListenerLauncher;
-import dev.leosanchez.providers.QueueConsumerProvider.IQueueConsumerProvider;
+import dev.leosanchez.services.ListenerLauncherService;
+import dev.leosanchez.services.QueueConsumerService;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.mockito.InjectMock;
 
@@ -26,12 +27,12 @@ import io.quarkus.test.junit.mockito.InjectMock;
 public class ListenerLauncherTest {
     // our service that launches the listeners
     @Inject
-    ListenerLauncher listenerLauncher;
+    ListenerLauncherService listenerLauncher;
 
-     // our service that communicates with the provider
+     // our service that communicates with the queue provider
     // we dont want to actually call it so we mock it
     @InjectMock
-    IQueueConsumerProvider queueConsumerProvider;
+    QueueConsumerService queueConsumerService;
 
     // mocks objects based on the IListener interface. As interfaces, we will initialize them later
     IListener oneWayListenerMock;
@@ -48,18 +49,25 @@ public class ListenerLauncherTest {
         Mockito.when(oneWayListenerMock.process(Mockito.anyString())).thenReturn(Optional.empty());
 
         // we will simulate the poll function of our queue consumer provider
-        Mockito.when(queueConsumerProvider.pollMessages(Mockito.anyString(), Mockito.anyInt()))
+        Mockito.when(queueConsumerService.pollMessages(Mockito.anyString(), Mockito.anyInt()))
             .thenAnswer(invocations -> {
-                // we mock that every call takes 1 second
-                Thread.sleep(1000);
                 // The messages we will receive will have the following format
                 // sourceQueueName + "/responseQueue"
                 String responseQueueUrl = invocations.getArgument(0) +"/responseQueue";
                 // we create a list of messages that our mock will return
                 return List.of(
-                    new QueueMessage("Hola", responseQueueUrl, "ES"),
-                    new QueueMessage("Hi",  responseQueueUrl, "EN"),
-                    new QueueMessage("Ciao", responseQueueUrl, "IT")
+                    new QueueMessage("Hola", "ES_00000001", new HashMap<String, String>() {{
+                        put("Signature", "ES");
+                        put("ResponseQueueUrl", responseQueueUrl);
+                    }}),
+                    new QueueMessage("Hi", "EN_00000001", new HashMap<String, String>() {{
+                        put("Signature", "EN");
+                        put("ResponseQueueUrl", responseQueueUrl);
+                    }}),
+                    new QueueMessage("Ciao", "IT_00000001", new HashMap<String, String>() {{
+                        put("Signature", "IT");
+                        put("ResponseQueueUrl", responseQueueUrl);
+                    }})
                 );
         });
     }
@@ -76,9 +84,9 @@ public class ListenerLauncherTest {
         listenerLauncher.orchestrateListeners( List.of(listenRequest), numberOfRequests);
 
         // in three pollings we expect three calls to our provider
-        Mockito.verify(queueConsumerProvider, Mockito.times(3)).pollMessages("FirstMock", 10);
+        Mockito.verify(queueConsumerService, Mockito.times(3)).pollMessages("FirstMock", 10);
         // we verify that the processer and sender has been called three times as well
-        Mockito.verify(queueConsumerProvider, Mockito.times(3)).sendAnswer(Mockito.eq("FirstMock/responseQueue"), Mockito.eq("Chao"), Mockito.eq("ES"));
+        Mockito.verify(queueConsumerService, Mockito.times(3)).sendAnswer(Mockito.eq("FirstMock/responseQueue"), Mockito.eq("Chao"), Mockito.eq("ES"));
     }
 
 
@@ -92,9 +100,9 @@ public class ListenerLauncherTest {
         listenerLauncher.orchestrateListeners( List.of(listenRequest), numberOfRequests);
         
         // in those three pollings we expect three calls to our provider
-        Mockito.verify(queueConsumerProvider, Mockito.atLeast(3)).pollMessages("SecondMock", 10);
+        Mockito.verify(queueConsumerService, Mockito.atLeast(3)).pollMessages("SecondMock", 10);
         // as those messages do not expect response, we verify that the send answer method has not been called
-        Mockito.verify(queueConsumerProvider, Mockito.never()).sendAnswer(Mockito.eq("SecondMock/responseQueue"), Mockito.any(), Mockito.anyString());
+        Mockito.verify(queueConsumerService, Mockito.never()).sendAnswer(Mockito.eq("SecondMock/responseQueue"), Mockito.any(), Mockito.anyString());
     }
     
     @Test
@@ -108,9 +116,9 @@ public class ListenerLauncherTest {
         Future<?> task = CompletableFuture.runAsync(() -> {
             listenerLauncher.orchestrateListeners(List.of(listenRequest), numberOfRequests);
         });
-        Thread.sleep(1500); // 1 second for polling and 500 ms for the processing of one message
+        Thread.sleep(500); // 500 ms for the processing of one message
         // there should be just one message processed as messages are processed in a sequence
-        Mockito.verify(queueConsumerProvider, Mockito.times(1)).sendAnswer(Mockito.eq("ThirdMock/responseQueue"), Mockito.anyString(), argThat(arg-> arg.equals("ES") || arg.equals("EN") || arg.equals("IT")));
+        Mockito.verify(queueConsumerService, Mockito.times(1)).sendAnswer(Mockito.eq("ThirdMock/responseQueue"), Mockito.anyString(), argThat(arg-> arg.equals("ES") || arg.equals("EN") || arg.equals("IT")));
         // we wait the task to finish
         task.get();
     }
@@ -124,9 +132,9 @@ public class ListenerLauncherTest {
         Future<?> task = CompletableFuture.runAsync(() -> {
             listenerLauncher.orchestrateListeners(List.of(listenRequest), numberOfRequests);
         });
-        Thread.sleep(1500);  
+        Thread.sleep(500);  
         // as process are processed in parallel, we expect more that one message processed during those 500 ms
-        Mockito.verify(queueConsumerProvider, Mockito.atLeast(2)).sendAnswer(Mockito.eq("FourthMock/responseQueue"), Mockito.anyString(), argThat(arg-> arg.equals("ES") || arg.equals("EN") || arg.equals("IT")));
+        Mockito.verify(queueConsumerService, Mockito.atLeast(2)).sendAnswer(Mockito.eq("FourthMock/responseQueue"), Mockito.anyString(), argThat(arg-> arg.equals("ES") || arg.equals("EN") || arg.equals("IT")));
         // we wait the task to finish
         task.get();
     } 
@@ -142,11 +150,11 @@ public class ListenerLauncherTest {
          listenerLauncher.orchestrateListeners( List.of(listenRequest, secondRequest), numberOfRequests);
  
          // in three polling requests we expect three calls for each listener
-         Mockito.verify(queueConsumerProvider, Mockito.times(3)).pollMessages("FifthMock", 10);
-         Mockito.verify(queueConsumerProvider, Mockito.times(3)).pollMessages("SixthMock", 10);
+         Mockito.verify(queueConsumerService, Mockito.times(3)).pollMessages("FifthMock", 10);
+         Mockito.verify(queueConsumerService, Mockito.times(3)).pollMessages("SixthMock", 10);
          // we verify that the processer and sender has been called three times
-         Mockito.verify(queueConsumerProvider, Mockito.times(3)).sendAnswer(Mockito.eq("FifthMock/responseQueue"), Mockito.eq("Chao"), Mockito.eq("ES"));
-         Mockito.verify(queueConsumerProvider, Mockito.times(3)).sendAnswer(Mockito.eq("SixthMock/responseQueue"), Mockito.eq("Chao"), Mockito.eq("ES"));
+         Mockito.verify(queueConsumerService, Mockito.times(3)).sendAnswer(Mockito.eq("FifthMock/responseQueue"), Mockito.eq("Chao"), Mockito.eq("ES"));
+         Mockito.verify(queueConsumerService, Mockito.times(3)).sendAnswer(Mockito.eq("SixthMock/responseQueue"), Mockito.eq("Chao"), Mockito.eq("ES"));
     }
 
 }

@@ -1,4 +1,4 @@
-package dev.leosanchez.listeners;
+package dev.leosanchez.services;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -22,16 +22,17 @@ import org.jboss.logging.Logger;
 
 import dev.leosanchez.DTO.ListenRequest;
 import dev.leosanchez.DTO.QueueMessage;
-import dev.leosanchez.providers.QueueConsumerProvider.IQueueConsumerProvider;
+import dev.leosanchez.listeners.IListener;
+import dev.leosanchez.qualifiers.ListenerQualifier;
 import io.quarkus.runtime.Startup;
 import io.quarkus.runtime.configuration.ProfileManager;
 
 @ApplicationScoped
 @Startup
-public class ListenerLauncher {
+public class ListenerLauncherService {
 
     // a simple logger
-    private static Logger LOG = Logger.getLogger(ListenerLauncher.class);
+    private static Logger LOG = Logger.getLogger(ListenerLauncherService.class);
 
     // our listeners injected and filtered by the qualifier
     @ListenerQualifier
@@ -39,7 +40,7 @@ public class ListenerLauncher {
 
     // the provider we implemented
     @Inject
-    IQueueConsumerProvider queueConsumerProvider;
+    QueueConsumerService queueConsumerService;
 
     @PostConstruct
     public void init() {
@@ -133,7 +134,7 @@ public class ListenerLauncher {
         try {
             LOG.info("polling messages for queue " + request.getQueueUrl());
             // we poll messages from the queue
-            List<QueueMessage> messages = queueConsumerProvider.pollMessages(request.getQueueUrl(),
+            List<QueueMessage> messages = queueConsumerService.pollMessages(request.getQueueUrl(),
                     request.getMaxMessagesPerPolling());
             if (messages.isEmpty()) {
                 LOG.info("No messages received for queue" + request.getQueueUrl());
@@ -164,9 +165,13 @@ public class ListenerLauncher {
         Optional<String> response = listener.process(message.getMessage());
         // if the response was not null we send it to the source queue according to its signature
         if (response.isPresent()) {
-            LOG.infov("Sending response: {0} {1} {2}", response, message.getSourceQueueUrl(),
-                    message.getSignature());
-            queueConsumerProvider.sendAnswer(message.getSourceQueueUrl(), response.get(), message.getSignature());
+            String sourceQueueUrl = message.getAttributes().get("ResponseQueueUrl");
+            String signature = message.getAttributes().get("Signature");
+            if (Objects.nonNull(sourceQueueUrl) && Objects.nonNull(signature)) {
+                queueConsumerService.sendAnswer(sourceQueueUrl, response.get(), signature);
+            } else {
+                LOG.error("ResponseQueueUrl or Signature not found in message attributes");
+            }
         }
         // if the execution time was lower than the min expected, sleep
         Long currentTime = System.currentTimeMillis();

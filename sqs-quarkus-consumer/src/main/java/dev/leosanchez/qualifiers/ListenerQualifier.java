@@ -1,4 +1,4 @@
-package dev.leosanchez.listeners;
+package dev.leosanchez.qualifiers;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.Target;

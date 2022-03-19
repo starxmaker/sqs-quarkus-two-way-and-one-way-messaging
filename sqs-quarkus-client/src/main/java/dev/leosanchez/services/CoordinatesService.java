@@ -5,7 +5,7 @@ import javax.inject.Inject;
 
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import dev.leosanchez.providers.QueueClientProvider.SQSClientProvider;
+import dev.leosanchez.adapters.QueueClientAdapter.SQSClientAdapter;
 import io.vertx.core.json.JsonObject;
 
 @ApplicationScoped
@@ -18,7 +18,7 @@ public class CoordinatesService {
     String onewayResponseQueueUrl;
 
     @Inject
-    SQSClientProvider queueProvider;
+    QueueService queueService;
 
     public JsonObject queryCoordinates(String city) {
         // we build the request
@@ -26,9 +26,9 @@ public class CoordinatesService {
         request.put("city", city);
 
         // we send the request and keep the signature
-        String signature = queueProvider.sendMessage(twoWaysQueueUrl, request.toString());
+        String signature = queueService.sendMessage(twoWaysQueueUrl, request.toString());
         //we await the message just for 30 seconds
-        String response = queueProvider.receiveResponse(signature, 30);
+        String response = queueService.receiveResponse(signature, 30);
 
         // we parse and return the response
         return response!=null? new JsonObject(response) : null;
@@ -40,6 +40,6 @@ public class CoordinatesService {
         request.put("lat", lat);
         request.put("lon", lon);
 
-        queueProvider.sendMessage(onewayResponseQueueUrl, request.toString());
+        queueService.sendMessage(onewayResponseQueueUrl, request.toString());
     }
 }

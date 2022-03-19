@@ -9,8 +9,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
-import dev.leosanchez.providers.QueueClientProvider.SQSClientProvider;
 import dev.leosanchez.services.CoordinatesService;
+import dev.leosanchez.services.QueueService;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.mockito.InjectMock;
 import io.vertx.core.json.JsonObject;
@@ -24,7 +24,7 @@ public class CoordinatesServiceTest {
 
     // we mock our provider
     @InjectMock
-    SQSClientProvider queueProvider;
+    QueueService queueService;
 
     // we implement some mock methods
     @BeforeEach
@@ -34,7 +34,7 @@ public class CoordinatesServiceTest {
         response.put("lon", 150.644);
 
         // we configure some signature responses
-        Mockito.when(queueProvider.sendMessage(
+        Mockito.when(queueService.sendMessage(
             Mockito.anyString(),
             argThat(matcher -> matcher.contains("Coquimbo") || matcher.contains("Santiago"))
         )).thenAnswer(answer -> {
@@ -45,7 +45,7 @@ public class CoordinatesServiceTest {
             }
         });
         // the first signature will return a response, the second will not
-        Mockito.when(queueProvider.receiveResponse(
+        Mockito.when(queueService.receiveResponse(
             argThat(matcher -> matcher.equals("CQBO") || matcher.equals("STGO")
         ), Mockito.anyInt())).thenAnswer(answer -> {
             if (answer.getArgument(0).equals("CQBO")) {
@@ -72,7 +72,7 @@ public class CoordinatesServiceTest {
     @Test
     public void testSubmitCoordinates() {
         service.submitCoordinates("Santiago", -34.397, 150.644);
-        Mockito.verify(queueProvider, Mockito.times(1)).sendMessage(
+        Mockito.verify(queueService, Mockito.times(1)).sendMessage(
             Mockito.anyString(),
             argThat(matcher -> {
                 JsonObject request = new JsonObject(matcher);
