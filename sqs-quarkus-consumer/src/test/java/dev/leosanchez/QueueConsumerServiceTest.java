@@ -3,14 +3,17 @@ package dev.leosanchez;
 
 import javax.inject.Inject;
 
+import dev.leosanchez.common.dto.QueueMessage;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatcher;
 import org.mockito.Mockito;
 
-import dev.leosanchez.DTO.QueueMessage;
-import dev.leosanchez.adapters.QueueAdapter.IQueueAdapter;
+import dev.leosanchez.common.adapters.queueadapter.IQueueAdapter;
+import dev.leosanchez.common.exceptions.MessagePollingException;
+import dev.leosanchez.common.exceptions.MessageRemovalException;
+import dev.leosanchez.common.exceptions.MessageSendingException;
 import dev.leosanchez.services.QueueConsumerService;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.mockito.InjectMock;
@@ -31,7 +34,7 @@ public class QueueConsumerServiceTest {
     IQueueAdapter adapter;
 
     @BeforeEach
-    public void beforeEach() {
+    public void beforeEach() throws MessagePollingException{
         // mock message receive
         Mockito.when(
             adapter.receiveMessages(Mockito.eq(queueUrl), Mockito.anyInt())
@@ -54,7 +57,7 @@ public class QueueConsumerServiceTest {
     }
 
     @Test
-    public void pollMessages() {
+    public void pollMessages() throws MessagePollingException {
         List<QueueMessage> messages =service.pollMessages(queueUrl, 10);
         Assertions.assertEquals(2, messages.size());
         Assertions.assertEquals("Au revoir", messages.get(0).getMessage());
@@ -66,16 +69,16 @@ public class QueueConsumerServiceTest {
     }
 
     @Test
-    public void deleteMessages() {
+    public void deleteMessages() throws MessageRemovalException, MessagePollingException {
         service.pollMessages(queueUrl, 10);
         Mockito.verify(adapter, Mockito.atLeastOnce()).deleteMessage(Mockito.eq(queueUrl), Mockito.eq("FR_00000001"));
         Mockito.verify(adapter, Mockito.atLeastOnce()).deleteMessage(Mockito.eq(queueUrl), Mockito.eq("EN_00000001"));
     }
 
     @Test
-    public void sendAnswer() {
+    public void sendAnswer() throws MessageSendingException {
         service.sendAnswer("https://targetqueue.com/testQueue", "Hello", "FR");
-        Mockito.verify(adapter, Mockito.times(1)).sendMessage(
+        Mockito.verify(adapter, Mockito.times(1)).sendMessageWithAttributes(
             Mockito.eq("https://targetqueue.com/testQueue"),
             Mockito.eq("Hello"),
             Mockito.argThat((ArgumentMatcher<Map<String, String>>) matcher -> matcher.get("Signature").equals("FR"))

@@ -11,12 +11,15 @@ import java.util.concurrent.Future;
 
 import javax.inject.Inject;
 
+import dev.leosanchez.common.dto.QueueMessage;
+import dev.leosanchez.common.exceptions.MessagePollingException;
+import dev.leosanchez.common.exceptions.MessageSendingException;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import dev.leosanchez.DTO.ListenRequest;
-import dev.leosanchez.DTO.QueueMessage;
 import dev.leosanchez.listeners.IListener;
 import dev.leosanchez.services.ListenerLauncherService;
 import dev.leosanchez.services.QueueConsumerService;
@@ -39,7 +42,7 @@ public class ListenerLauncherTest {
     IListener twoWaysListenerMock;
 
     @BeforeEach
-    public void beforeEach() {
+    public void beforeEach() throws MessagePollingException {
         // we initialize our listener mocks
         oneWayListenerMock = Mockito.mock(IListener.class);
         twoWaysListenerMock = Mockito.mock(IListener.class);
@@ -74,7 +77,7 @@ public class ListenerLauncherTest {
 
 
     @Test
-    public void testTwoWaysListening() {
+    public void testTwoWaysListening() throws MessageSendingException, MessagePollingException{
         // define listen request
         ListenRequest listenRequest = new ListenRequest(twoWaysListenerMock,  "FirstMock", false, 10, 0);
         // we will launch polling three times
@@ -92,7 +95,7 @@ public class ListenerLauncherTest {
 
     
     @Test
-    public void testOneWayListening(){
+    public void testOneWayListening() throws MessageSendingException, MessagePollingException{
         //define listen request
         ListenRequest listenRequest = new ListenRequest(oneWayListenerMock,  "SecondMock", false, 10, 0);
         Integer numberOfRequests = 3;
@@ -106,7 +109,7 @@ public class ListenerLauncherTest {
     }
     
     @Test
-    public void testNoParallelProcessing() throws InterruptedException, ExecutionException {
+    public void testNoParallelProcessing() throws InterruptedException, ExecutionException, MessageSendingException {
         //we define the listener request with non parallel processing
         ListenRequest listenRequest = new ListenRequest(twoWaysListenerMock,  "ThirdMock", false, 10, 500);
         // we just require 1 polling to test this behaviour
@@ -124,7 +127,7 @@ public class ListenerLauncherTest {
     }
 
     @Test
-    public void testParallelProcessing() throws InterruptedException, ExecutionException {
+    public void testParallelProcessing() throws InterruptedException, ExecutionException, MessageSendingException {
         // we define the listener request with parallel processing
         ListenRequest listenRequest = new ListenRequest(twoWaysListenerMock,  "FourthMock", true, 10, 500);
         Integer numberOfRequests = 1;
@@ -140,7 +143,7 @@ public class ListenerLauncherTest {
     } 
 
     @Test
-    public void testMultipleListeners() {
+    public void testMultipleListeners() throws MessageSendingException, MessagePollingException {
          // define multiple listen requests
          ListenRequest listenRequest = new ListenRequest(twoWaysListenerMock,  "FifthMock", false, 10, 0);
          ListenRequest secondRequest = new ListenRequest(twoWaysListenerMock,  "SixthMock", false, 10, 0);

@@ -7,10 +7,13 @@ import java.util.Map;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 
+import dev.leosanchez.common.dto.QueueMessage;
 import org.jboss.logging.Logger;
 
-import dev.leosanchez.DTO.QueueMessage;
-import dev.leosanchez.adapters.QueueAdapter.IQueueAdapter;
+import dev.leosanchez.common.adapters.queueadapter.IQueueAdapter;
+import dev.leosanchez.common.exceptions.MessagePollingException;
+import dev.leosanchez.common.exceptions.MessageRemovalException;
+import dev.leosanchez.common.exceptions.MessageSendingException;
 
 @ApplicationScoped
 public class QueueConsumerService {
@@ -20,24 +23,29 @@ public class QueueConsumerService {
     @Inject
     IQueueAdapter queueAdapter;
 
-    public List<QueueMessage> pollMessages(String queueUrl, int maxNumberOfMessages) {
+    public List<QueueMessage> pollMessages(String queueUrl, int maxNumberOfMessages) throws MessagePollingException {
         List<QueueMessage> messages = queueAdapter.receiveMessages(queueUrl, maxNumberOfMessages);
         messages.forEach(message -> {
             LOG.info("Received message " + message.getMessage());
             // we delete the message
-            queueAdapter.deleteMessage(queueUrl, message.getReceiptHandle());
+            try{
+                queueAdapter.deleteMessage(queueUrl, message.getReceiptHandle());
+            } catch (MessageRemovalException e) {
+                throw new RuntimeException(e);
+            }
         });
         return messages;
     }
 
-    public void sendAnswer(String sourceQueueUrl, String responseMessage, String signature) {
+    public void sendAnswer(String sourceQueueUrl, String responseMessage, String signature)  throws MessageSendingException{
         LOG.info("Sending message " + responseMessage);
         Map<String, String> attributes = new HashMap<>() {
             {
                 put("Signature", signature);
             }
         };
-        queueAdapter.sendMessage(sourceQueueUrl, responseMessage, attributes);
+        LOG.info("url" + sourceQueueUrl);
+        queueAdapter.sendMessageWithAttributes(sourceQueueUrl, responseMessage, attributes);
     }
 
 }

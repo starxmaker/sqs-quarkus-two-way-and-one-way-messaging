@@ -17,11 +17,13 @@ import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.inject.Instance;
 import javax.inject.Inject;
 
+import dev.leosanchez.common.dto.QueueMessage;
+import dev.leosanchez.common.exceptions.MessagePollingException;
+
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 import dev.leosanchez.DTO.ListenRequest;
-import dev.leosanchez.DTO.QueueMessage;
 import dev.leosanchez.listeners.IListener;
 import dev.leosanchez.qualifiers.ListenerQualifier;
 import io.quarkus.runtime.Startup;
@@ -92,28 +94,40 @@ public class ListenerLauncherService {
         Map<String, Future<?>> currentExecutions = new HashMap<>();
         // we will also keep a record of the quantity of the pollings performed per listener
         Map<String, Integer> pollingRecord = requests.stream().collect(Collectors.toMap(ListenRequest::getQueueUrl, e -> 0));
+        // we keep a record of suspensions in case a polling fails
+        Map<String, Long> queuePollingSuspension = new HashMap<>();
+        Long failingSuspension = 5 * 60 * 1000L;
+        
         // iterate continuosly  or until iterations are done
         while (Objects.isNull(pollingQuantity) || !pollingRecord.values().stream().allMatch(p -> p >= pollingQuantity)) {
             // we iterate each request extracted
             for (ListenRequest request : requests) {
                 // we check how much pollings have been done for this request
                 Integer currentIterations = pollingRecord.get(request.getQueueUrl());
-                // if we dont limit the number of pollings or  if the current number of pollings is less than the one desired, continue
-                if (Objects.isNull(pollingQuantity) || currentIterations <  pollingQuantity){
-                    // we verify if there is a current execution for this request
-                    Future<?> currentTask = currentExecutions.get(request.getQueueUrl());
-                    // if there is no execution or if the current execution is done, run a new one for the request
-                    // if there is an execution not done, we skip this request and in a new execution we will check if it is finished
-                    if (Objects.isNull(currentTask) || currentTask.isDone()) {
-                        // we define and run the new task
-                        Future<?> currentExecution = CompletableFuture.runAsync(() -> {
-                                performPolling(request);
+                if (! queuePollingSuspension.containsKey(request.getQueueUrl()) ||  queuePollingSuspension.get(request.getQueueUrl()) < System.currentTimeMillis()) {
+                    // if we dont limit the number of pollings or  if the current number of pollings is less than the one desired, continue
+                    if (Objects.isNull(pollingQuantity) || currentIterations <  pollingQuantity ) {
+                        // we verify if there is a current execution for this request
+                        Future<?> currentTask = currentExecutions.get(request.getQueueUrl());
+                        // if there is no execution or if the current execution is done, run a new one for the request
+                        // if there is an execution not done, we skip this request and in a new execution we will check if it is finished
+                        if (Objects.isNull(currentTask) || currentTask.isDone()) {
+                            // we define and run the new task
+                            Future<?> currentExecution = CompletableFuture.runAsync(() -> {
+                                try {
+                                    performPolling(request);
+                                } catch (Exception e) {
+                                    e.printStackTrace();
+                                    LOG.error("Polling for " + request.getQueueUrl() + " failed, retrying in "+failingSuspension+" milliseconds");
+                                    queuePollingSuspension.put(request.getQueueUrl(), System.currentTimeMillis() + failingSuspension);
+                                }
                             });
-                        // we save it on our records
-                        currentExecutions.put(request.getQueueUrl(), currentExecution);
-                        // if the polling quantity param was specified, then update the polling records
-                        if(Objects.nonNull(pollingQuantity)) {
-                            pollingRecord.put(request.getQueueUrl(), currentIterations + 1);
+                            // we save it on our records
+                            currentExecutions.put(request.getQueueUrl(), currentExecution);
+                            // if the polling quantity param was specified, then update the polling records
+                            if(Objects.nonNull(pollingQuantity)) {
+                                pollingRecord.put(request.getQueueUrl(), currentIterations + 1);
+                            }
                         }
                     }
                 }
@@ -130,8 +144,7 @@ public class ListenerLauncherService {
     }
 
 
-    private void performPolling(ListenRequest request) {
-        try {
+    private void performPolling(ListenRequest request) throws MessagePollingException {
             LOG.info("polling messages for queue " + request.getQueueUrl());
             // we poll messages from the queue
             List<QueueMessage> messages = queueConsumerService.pollMessages(request.getQueueUrl(),
@@ -153,10 +166,7 @@ public class ListenerLauncherService {
                     messages.stream().forEach(consumer);
                 }
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-            LOG.error("Queue " + request.getQueueUrl() + " was stopped due to an error", e);
-        }
+        
     }
 
     private void onMessage(QueueMessage message, IListener listener, int minProcessingMilliseconds) {
@@ -168,7 +178,12 @@ public class ListenerLauncherService {
             String sourceQueueUrl = message.getAttributes().get("ResponseQueueUrl");
             String signature = message.getAttributes().get("Signature");
             if (Objects.nonNull(sourceQueueUrl) && Objects.nonNull(signature)) {
-                queueConsumerService.sendAnswer(sourceQueueUrl, response.get(), signature);
+                try {
+                    queueConsumerService.sendAnswer(sourceQueueUrl, response.get(), signature);
+                } catch (Exception e) {
+                    LOG.error("Error sending message");
+                    e.printStackTrace();
+                }
             } else {
                 LOG.error("ResponseQueueUrl or Signature not found in message attributes");
             }

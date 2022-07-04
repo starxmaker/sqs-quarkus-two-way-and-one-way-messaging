@@ -8,7 +8,6 @@ import javax.inject.Inject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import dev.leosanchez.repositories.CoordinatesRepository;
 import dev.leosanchez.services.CoordinatesService;
 import io.quarkus.test.junit.QuarkusTest;
 
@@ -40,6 +39,4 @@ public class CoordinatesServiceTest {
         Assertions.assertEquals(-53.7873884, coordinates.get(0));
         Assertions.assertEquals(-53.7873884, coordinates.get(1));
     }
-    
-
 }
